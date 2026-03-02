@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useMapsLibrary } from "@vis.gl/react-google-maps";
 import { Input } from "@/components/ui/input";
-import { Search, MapPin, Loader2 } from "lucide-react";
+import { Search, MapPin, Loader2, AlertTriangle } from "lucide-react";
 
 export interface PlaceResult {
   placeId: string;
@@ -35,6 +35,8 @@ export default function PlacesAutocomplete({
   const [isOpen, setIsOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [isFetchingDetails, setIsFetchingDetails] = useState(false);
+  const [libReady, setLibReady] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const autocompleteService =
     useRef<google.maps.places.AutocompleteService | null>(null);
@@ -47,19 +49,40 @@ export default function PlacesAutocomplete({
 
   // Initialize services when the places library loads
   useEffect(() => {
-    if (!placesLib) return;
-
-    autocompleteService.current =
-      new placesLib.AutocompleteService();
-    sessionToken.current =
-      new placesLib.AutocompleteSessionToken();
-
-    // PlacesService needs a div or map element
-    if (!dummyDiv.current) {
-      dummyDiv.current = document.createElement("div");
+    if (!placesLib) {
+      console.log("[PlacesAutocomplete] Waiting for Places library to load...");
+      return;
     }
-    placesService.current = new placesLib.PlacesService(dummyDiv.current);
+
+    try {
+      console.log("[PlacesAutocomplete] Places library loaded, initializing services");
+      autocompleteService.current = new placesLib.AutocompleteService();
+      sessionToken.current = new placesLib.AutocompleteSessionToken();
+
+      if (!dummyDiv.current) {
+        dummyDiv.current = document.createElement("div");
+      }
+      placesService.current = new placesLib.PlacesService(dummyDiv.current);
+      setLibReady(true);
+      setErrorMsg(null);
+      console.log("[PlacesAutocomplete] Services initialized successfully");
+    } catch (err) {
+      console.error("[PlacesAutocomplete] Failed to initialize:", err);
+      setErrorMsg("Failed to load Google Places. Check your API key and that Places API is enabled.");
+    }
   }, [placesLib]);
+
+  // Show timeout error if library doesn't load after 8 seconds
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (!libReady) {
+        setErrorMsg(
+          "Google Places API not loading. Make sure: (1) Places API is enabled in Google Cloud Console, (2) your API key has no referrer restrictions blocking this domain."
+        );
+      }
+    }, 8000);
+    return () => clearTimeout(timer);
+  }, [libReady]);
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -85,6 +108,7 @@ export default function PlacesAutocomplete({
       }
 
       setIsLoading(true);
+      setErrorMsg(null);
 
       autocompleteService.current.getPlacePredictions(
         {
@@ -94,15 +118,21 @@ export default function PlacesAutocomplete({
         },
         (predictions, status) => {
           setIsLoading(false);
+          console.log("[PlacesAutocomplete] Prediction status:", status, "count:", predictions?.length || 0);
           if (
             status === google.maps.places.PlacesServiceStatus.OK &&
             predictions
           ) {
             setSuggestions(predictions);
             setIsOpen(true);
+          } else if (status === google.maps.places.PlacesServiceStatus.ZERO_RESULTS) {
+            setSuggestions([]);
+            setIsOpen(false);
           } else {
             setSuggestions([]);
             setIsOpen(false);
+            console.error("[PlacesAutocomplete] API error status:", status);
+            setErrorMsg(`Google Places API error: ${status}. Check API key permissions.`);
           }
         }
       );
@@ -173,6 +203,9 @@ export default function PlacesAutocomplete({
 
           // Refresh session token after a place is selected (billing best practice)
           sessionToken.current = new placesLib.AutocompleteSessionToken();
+        } else {
+          console.error("[PlacesAutocomplete] Place details error:", status);
+          setErrorMsg(`Could not fetch place details: ${status}`);
         }
       }
     );
@@ -188,13 +221,25 @@ export default function PlacesAutocomplete({
           onFocus={() => {
             if (suggestions.length > 0) setIsOpen(true);
           }}
-          placeholder={placeholder}
+          placeholder={libReady ? placeholder : "Loading Google Places..."}
           className="pl-9 pr-9"
+          disabled={!libReady && !errorMsg}
         />
         {(isLoading || isFetchingDetails) && (
           <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 animate-spin text-muted-foreground" />
         )}
+        {!libReady && !errorMsg && (
+          <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 animate-spin text-muted-foreground" />
+        )}
       </div>
+
+      {/* Error message */}
+      {errorMsg && (
+        <div className="mt-1.5 flex items-start gap-2 rounded-md border border-yellow-200 bg-yellow-50 dark:border-yellow-900 dark:bg-yellow-950 px-3 py-2 text-xs text-yellow-800 dark:text-yellow-300">
+          <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+          <span>{errorMsg}</span>
+        </div>
+      )}
 
       {/* Suggestions dropdown */}
       {isOpen && suggestions.length > 0 && (

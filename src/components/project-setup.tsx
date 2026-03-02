@@ -28,7 +28,7 @@ export default function ProjectSetup({ onCreateProject }: ProjectSetupProps) {
   // If we have an API key, wrap in APIProvider for autocomplete
   if (apiKey) {
     return (
-      <APIProvider apiKey={apiKey} libraries={["places"]}>
+      <APIProvider apiKey={apiKey}>
         <ProjectSetupForm onCreateProject={onCreateProject} hasAutocomplete />
       </APIProvider>
     );
