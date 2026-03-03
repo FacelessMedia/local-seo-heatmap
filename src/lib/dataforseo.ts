@@ -34,58 +34,19 @@ function getAuthHeader(config: DataForSEOConfig): string {
   return "Basic " + Buffer.from(`${config.login}:${config.password}`).toString("base64");
 }
 
-export async function scanGridPoint(
-  config: DataForSEOConfig,
-  keyword: string,
-  point: GridPoint,
-  languageCode: string = "en",
-  depth: number = 20
-): Promise<MapSearchResult[]> {
-  const response = await fetch(
-    "https://api.dataforseo.com/v3/serp/google/maps/live/advanced",
-    {
-      method: "POST",
-      headers: {
-        Authorization: getAuthHeader(config),
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify([
-        {
-          language_code: languageCode,
-          location_coordinate: `${point.lat.toFixed(7)},${point.lng.toFixed(7)},15z`,
-          keyword: keyword,
-          depth: depth,
-        },
-      ]),
-    }
-  );
-
-  if (!response.ok) {
-    throw new Error(`DataForSEO API error: ${response.status} ${response.statusText}`);
-  }
-
-  const data = await response.json();
-
-  if (data.status_code !== 20000) {
-    throw new Error(`DataForSEO error: ${data.status_message}`);
-  }
-
-  const task = data.tasks?.[0];
-  if (!task || task.status_code !== 20000) {
-    throw new Error(`DataForSEO task error: ${task?.status_message || "Unknown error"}`);
-  }
-
-  const items = task.result?.[0]?.items || [];
+function parseTaskItems(task: Record<string, unknown>): MapSearchResult[] {
+  const result = (task.result as Record<string, unknown>[])?.[0];
+  const items = (result?.items as Record<string, unknown>[]) || [];
 
   return items
-    .filter((item: Record<string, unknown>) => item.type === "maps_search")
-    .map((item: Record<string, unknown>, index: number) => ({
+    .filter((item) => item.type === "maps_search")
+    .map((item) => ({
       place_id: item.place_id as string,
       title: item.title as string,
       rank_group: item.rank_group as number,
       rank_absolute: item.rank_absolute as number,
-      domain: item.domain as string || "",
-      url: item.url as string || "",
+      domain: (item.domain as string) || "",
+      url: (item.url as string) || "",
       rating: item.rating as MapSearchResult["rating"],
       address: item.address as string,
       phone: item.phone as string,
@@ -119,7 +80,6 @@ function fuzzyMatch(a: string, b: string): number {
   if (na === nb) return 1;
   if (na.includes(nb) || nb.includes(na)) return 0.9;
 
-  // Simple Jaccard similarity on words
   const wordsA = new Set(a.toLowerCase().split(/\s+/));
   const wordsB = new Set(b.toLowerCase().split(/\s+/));
   const intersection = new Set([...wordsA].filter((x) => wordsB.has(x)));
@@ -128,61 +88,145 @@ function fuzzyMatch(a: string, b: string): number {
   return intersection.size / union.size;
 }
 
-export async function runFullGridScan(
+// Send ALL grid points in a SINGLE API call (DataForSEO supports up to 100 tasks per POST).
+// This takes ~3-5 seconds instead of 49 separate calls that take 2+ minutes.
+export async function scanAllPointsBulk(
   config: DataForSEOConfig,
   keyword: string,
   gridPoints: GridPoint[],
   targetPlaceId?: string,
   targetName?: string,
-  onProgress?: (completed: number, total: number) => void
-): Promise<GridScanResult[]> {
-  const results: GridScanResult[] = [];
-  const batchSize = 10; // Process 10 concurrent requests
+  languageCode: string = "en",
+  depth: number = 20
+): Promise<{ results: GridScanResult[]; rawLog: string }> {
+  const logLines: string[] = [];
+  const log = (msg: string) => {
+    logLines.push(`[${new Date().toISOString()}] ${msg}`);
+  };
 
-  for (let i = 0; i < gridPoints.length; i += batchSize) {
-    const batch = gridPoints.slice(i, i + batchSize);
+  log(`Bulk scan: ${gridPoints.length} points, keyword="${keyword}", target="${targetName}", placeId="${targetPlaceId}"`);
 
-    const batchResults = await Promise.allSettled(
-      batch.map(async (point) => {
-        try {
-          const searchResults = await scanGridPoint(config, keyword, point);
-          const rank = findBusinessRank(searchResults, targetPlaceId, targetName);
-          return {
-            point,
-            rank,
-            topResults: searchResults.slice(0, 5),
-          } as GridScanResult;
-        } catch (error) {
-          return {
-            point,
-            rank: null,
-            topResults: [],
-            error: error instanceof Error ? error.message : "Unknown error",
-          } as GridScanResult;
-        }
-      })
-    );
+  // Build all tasks in one array (DataForSEO accepts up to 100 per POST)
+  const tasks = gridPoints.map((point, i) => ({
+    language_code: languageCode,
+    location_coordinate: `${point.lat.toFixed(7)},${point.lng.toFixed(7)},15z`,
+    keyword: keyword,
+    depth: depth,
+    tag: `${point.row}-${point.col}`, // Tag to match results back to grid points
+  }));
 
-    for (const result of batchResults) {
-      if (result.status === "fulfilled") {
-        results.push(result.value);
-      } else {
-        results.push({
-          point: batch[batchResults.indexOf(result)],
-          rank: null,
-          topResults: [],
-          error: result.reason?.message || "Failed",
-        });
-      }
+  log(`Sending ${tasks.length} tasks in single POST to DataForSEO...`);
+
+  const response = await fetch(
+    "https://api.dataforseo.com/v3/serp/google/maps/live/advanced",
+    {
+      method: "POST",
+      headers: {
+        Authorization: getAuthHeader(config),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(tasks),
     }
+  );
 
-    onProgress?.(Math.min(i + batchSize, gridPoints.length), gridPoints.length);
-
-    // Small delay between batches to respect rate limits
-    if (i + batchSize < gridPoints.length) {
-      await new Promise((resolve) => setTimeout(resolve, 200));
-    }
+  if (!response.ok) {
+    const text = await response.text();
+    log(`API HTTP error: ${response.status} ${response.statusText} — ${text}`);
+    throw new Error(`DataForSEO API error: ${response.status} ${response.statusText}`);
   }
 
-  return results;
+  const data = await response.json();
+  log(`API response: status_code=${data.status_code}, tasks_count=${data.tasks_count}, tasks_error=${data.tasks_error}`);
+
+  if (data.status_code !== 20000) {
+    log(`API-level error: ${data.status_message}`);
+    throw new Error(`DataForSEO error: ${data.status_message}`);
+  }
+
+  const taskResults = data.tasks || [];
+  log(`Received ${taskResults.length} task results`);
+
+  const results: GridScanResult[] = [];
+
+  for (let i = 0; i < gridPoints.length; i++) {
+    const point = gridPoints[i];
+    const task = taskResults[i];
+
+    if (!task) {
+      log(`Point ${i} (${point.row},${point.col}): No task result returned`);
+      results.push({ point, rank: null, topResults: [], error: "No result" });
+      continue;
+    }
+
+    if (task.status_code !== 20000) {
+      log(`Point ${i} (${point.row},${point.col}): Task error ${task.status_code} — ${task.status_message}`);
+      results.push({ point, rank: null, topResults: [], error: task.status_message });
+      continue;
+    }
+
+    const searchResults = parseTaskItems(task);
+    const rank = findBusinessRank(searchResults, targetPlaceId, targetName);
+
+    if (rank) {
+      log(`Point ${i} (${point.row},${point.col}): RANK #${rank} — top result: "${searchResults[0]?.title}"`);
+    } else {
+      log(`Point ${i} (${point.row},${point.col}): NOT FOUND — top 3: ${searchResults.slice(0, 3).map(r => `"${r.title}"`).join(", ")}`);
+    }
+
+    results.push({
+      point,
+      rank,
+      topResults: searchResults.slice(0, 5),
+    });
+  }
+
+  const found = results.filter((r) => r.rank !== null).length;
+  const errors = results.filter((r) => r.error).length;
+  log(`Scan complete: ${found} found, ${errors} errors, ${results.length - found - errors} not ranked`);
+
+  return { results, rawLog: logLines.join("\n") };
+}
+
+// Keep single-point scan for backward compatibility
+export async function scanGridPoint(
+  config: DataForSEOConfig,
+  keyword: string,
+  point: GridPoint,
+  languageCode: string = "en",
+  depth: number = 20
+): Promise<MapSearchResult[]> {
+  const response = await fetch(
+    "https://api.dataforseo.com/v3/serp/google/maps/live/advanced",
+    {
+      method: "POST",
+      headers: {
+        Authorization: getAuthHeader(config),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify([
+        {
+          language_code: languageCode,
+          location_coordinate: `${point.lat.toFixed(7)},${point.lng.toFixed(7)},15z`,
+          keyword: keyword,
+          depth: depth,
+        },
+      ]),
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(`DataForSEO API error: ${response.status} ${response.statusText}`);
+  }
+
+  const data = await response.json();
+  if (data.status_code !== 20000) {
+    throw new Error(`DataForSEO error: ${data.status_message}`);
+  }
+
+  const task = data.tasks?.[0];
+  if (!task || task.status_code !== 20000) {
+    throw new Error(`DataForSEO task error: ${task?.status_message || "Unknown error"}`);
+  }
+
+  return parseTaskItems(task);
 }

@@ -70,6 +70,19 @@ export default function Home() {
     setDebugLogs((prev) => [...prev, { time, message, type }]);
   }, []);
 
+  const saveLogFile = useCallback((keyword: string, business: string, rawLog: string) => {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    const filename = `scan-${business.replace(/[^a-zA-Z0-9]/g, "_")}-${keyword.replace(/[^a-zA-Z0-9]/g, "_")}-${timestamp}.log`;
+    const blob = new Blob([rawLog], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+    addLog(`📁 Log saved: ${filename}`, "success");
+  }, [addLog]);
+
   const handleStartScan = async (data: ScanFormData) => {
     if (!activeProject) return;
 
@@ -145,11 +158,15 @@ export default function Home() {
                 setScanProgress(eventData);
                 addLog(`Progress: ${eventData.completed}/${eventData.total}`, "progress");
               } else if (eventType === "complete") {
-                const { scan, results } = eventData;
+                const { scan, results, rawLog } = eventData;
                 setScans((prev) => [...prev, scan]);
                 setActiveScan(scan);
                 setScanResults(results);
                 addLog(`Scan complete! Average rank: ${scan.averageRank ?? "N/A"}`, "success");
+                // Auto-save log file
+                if (rawLog) {
+                  saveLogFile(scan.keyword, activeProject?.businessName || "", rawLog);
+                }
               } else if (eventType === "error") {
                 addLog(`Error: ${eventData.message}`, "error");
                 setScanError(eventData.message);
