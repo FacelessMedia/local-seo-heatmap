@@ -1,62 +1,70 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getScans, addScan, updateScan, getScan, setScanResults, getProject } from "@/lib/store";
 import { Scan, ScanResult } from "@/lib/types";
 import { generateGrid } from "@/lib/grid";
 import { runFullGridScan } from "@/lib/dataforseo";
 
-export async function GET(request: NextRequest) {
-  const { searchParams } = new URL(request.url);
-  const projectId = searchParams.get("projectId") || undefined;
-  const scans = getScans(projectId);
-  return NextResponse.json(scans);
-}
+// Self-contained scan API — no in-memory store needed.
+// All project data is passed in the request body and all results are returned directly.
 
 export async function POST(request: NextRequest) {
   const body = await request.json();
-  const { projectId, keyword, gridSize, gridSpacing } = body;
+  const {
+    keyword,
+    gridSize: rawGridSize,
+    gridSpacing: rawGridSpacing,
+    businessName,
+    placeId,
+    latitude,
+    longitude,
+  } = body;
 
-  const project = getProject(projectId);
-  if (!project) {
-    return NextResponse.json({ error: "Project not found" }, { status: 404 });
+  if (!keyword || !businessName || latitude === undefined || longitude === undefined) {
+    return NextResponse.json(
+      { error: "Missing required fields: keyword, businessName, latitude, longitude" },
+      { status: 400 }
+    );
   }
+
+  const gridSize = rawGridSize || 7;
+  const gridSpacing = rawGridSpacing || 1609;
 
   const scan: Scan = {
     id: crypto.randomUUID(),
     keywordId: "",
-    projectId,
+    projectId: "",
     keyword,
-    status: "pending",
-    gridSize: gridSize || 7,
-    gridSpacing: gridSpacing || 1000,
+    status: "running",
+    gridSize,
+    gridSpacing,
     averageRank: null,
-    totalPoints: (gridSize || 7) * (gridSize || 7),
+    totalPoints: gridSize * gridSize,
     pointsRanked: 0,
+    startedAt: new Date().toISOString(),
     createdAt: new Date().toISOString(),
   };
 
-  addScan(scan);
+  const gridPoints = generateGrid({
+    centerLat: latitude,
+    centerLng: longitude,
+    gridSize,
+    spacingMeters: gridSpacing,
+  });
 
-  // Check if DataForSEO credentials are configured (trim to remove any trailing whitespace/newlines)
+  // Check if DataForSEO credentials are configured
   const login = process.env.DATAFORSEO_LOGIN?.trim();
   const password = process.env.DATAFORSEO_PASSWORD?.trim();
 
+  let results: ScanResult[];
+
   if (!login || !password) {
     // Demo mode: generate mock results
-    const gridPoints = generateGrid({
-      centerLat: project.latitude,
-      centerLng: project.longitude,
-      gridSize: scan.gridSize,
-      spacingMeters: scan.gridSpacing,
-    });
+    console.log(`[Scan] Demo mode (no DataForSEO creds): keyword="${keyword}", business="${businessName}"`);
 
-    updateScan(scan.id, { status: "running", startedAt: new Date().toISOString() });
-
-    const mockResults: ScanResult[] = gridPoints.map((point) => {
+    results = gridPoints.map((point) => {
       const distFromCenter = Math.sqrt(
-        Math.pow(point.row - Math.floor(scan.gridSize / 2), 2) +
-        Math.pow(point.col - Math.floor(scan.gridSize / 2), 2)
+        Math.pow(point.row - Math.floor(gridSize / 2), 2) +
+        Math.pow(point.col - Math.floor(gridSize / 2), 2)
       );
-      // Simulate: closer to center = better rank, with some randomness
       const baseRank = Math.max(1, Math.round(distFromCenter * 1.5 + Math.random() * 3));
       const rank = baseRank <= 20 ? baseRank : null;
 
@@ -69,98 +77,71 @@ export async function POST(request: NextRequest) {
         longitude: point.lng,
         rank,
         topResults: [
-          { place_id: project.placeId || "demo_place_1", title: project.businessName, rank: rank || 21, category: "Business" },
+          { place_id: placeId || "demo_1", title: businessName, rank: rank || 21, category: "Business" },
           { place_id: "comp_1", title: "Competitor A", rank: 2, category: "Business" },
           { place_id: "comp_2", title: "Competitor B", rank: 3, category: "Business" },
         ],
       };
     });
+  } else {
+    // Real mode with DataForSEO
+    console.log(`[Scan] Real scan: keyword="${keyword}", business="${businessName}", placeId="${placeId}", grid=${gridSize}x${gridSize}, points=${gridPoints.length}`);
 
-    setScanResults(scan.id, mockResults);
+    try {
+      const gridResults = await runFullGridScan(
+        { login, password },
+        keyword,
+        gridPoints,
+        placeId,
+        businessName
+      );
 
-    const ranked = mockResults.filter((r) => r.rank !== null);
-    const avgRank = ranked.length > 0
-      ? Math.round((ranked.reduce((a, r) => a + (r.rank || 0), 0) / ranked.length) * 10) / 10
-      : null;
+      const errorCount = gridResults.filter((r) => r.error).length;
+      const foundCount = gridResults.filter((r) => r.rank !== null).length;
+      console.log(`[Scan] Results: ${foundCount} found, ${errorCount} errors, ${gridResults.length - foundCount - errorCount} not ranked`);
+      if (errorCount > 0) {
+        console.error(`[Scan] Sample error:`, gridResults.find((r) => r.error)?.error);
+      }
 
-    updateScan(scan.id, {
-      status: "completed",
-      averageRank: avgRank,
-      pointsRanked: ranked.length,
-      completedAt: new Date().toISOString(),
-    });
-
-    return NextResponse.json(getScan(scan.id), { status: 201 });
-  }
-
-  // Real mode with DataForSEO
-  updateScan(scan.id, { status: "running", startedAt: new Date().toISOString() });
-
-  try {
-    const gridPoints = generateGrid({
-      centerLat: project.latitude,
-      centerLng: project.longitude,
-      gridSize: scan.gridSize,
-      spacingMeters: scan.gridSpacing,
-    });
-
-    console.log(`[Scan] Starting real scan: keyword="${keyword}", business="${project.businessName}", placeId="${project.placeId}", grid=${scan.gridSize}x${scan.gridSize}, points=${gridPoints.length}`);
-
-    const gridResults = await runFullGridScan(
-      { login: login!, password: password! },
-      keyword,
-      gridPoints,
-      project.placeId,
-      project.businessName
-    );
-
-    const errorCount = gridResults.filter(r => r.error).length;
-    const foundCount = gridResults.filter(r => r.rank !== null).length;
-    console.log(`[Scan] Results: ${foundCount} found, ${errorCount} errors, ${gridResults.length - foundCount - errorCount} not ranked`);
-    if (errorCount > 0) {
-      const sampleError = gridResults.find(r => r.error);
-      console.error(`[Scan] Sample error:`, sampleError?.error);
+      results = gridResults.map((gr) => ({
+        id: crypto.randomUUID(),
+        scanId: scan.id,
+        gridRow: gr.point.row,
+        gridCol: gr.point.col,
+        latitude: gr.point.lat,
+        longitude: gr.point.lng,
+        rank: gr.rank,
+        topResults: gr.topResults.map((tr, i) => ({
+          place_id: tr.place_id,
+          title: tr.title,
+          rank: i + 1,
+          rating: tr.rating?.value,
+          reviews: tr.rating?.votes_count,
+          address: tr.address,
+          category: tr.category,
+        })),
+      }));
+    } catch (error) {
+      console.error("[Scan] Failed:", error instanceof Error ? error.message : error);
+      return NextResponse.json(
+        { error: `Scan failed: ${error instanceof Error ? error.message : "Unknown error"}` },
+        { status: 500 }
+      );
     }
+  }
 
-    const results: ScanResult[] = gridResults.map((gr) => ({
-      id: crypto.randomUUID(),
-      scanId: scan.id,
-      gridRow: gr.point.row,
-      gridCol: gr.point.col,
-      latitude: gr.point.lat,
-      longitude: gr.point.lng,
-      rank: gr.rank,
-      topResults: gr.topResults.map((tr, i) => ({
-        place_id: tr.place_id,
-        title: tr.title,
-        rank: i + 1,
-        rating: tr.rating?.value,
-        reviews: tr.rating?.votes_count,
-        address: tr.address,
-        category: tr.category,
-      })),
-    }));
-
-    setScanResults(scan.id, results);
-
-    const ranked = results.filter((r) => r.rank !== null);
-    const avgRank = ranked.length > 0
+  // Calculate stats
+  const ranked = results.filter((r) => r.rank !== null);
+  const avgRank =
+    ranked.length > 0
       ? Math.round((ranked.reduce((a, r) => a + (r.rank || 0), 0) / ranked.length) * 10) / 10
       : null;
 
-    updateScan(scan.id, {
-      status: "completed",
-      averageRank: avgRank,
-      pointsRanked: ranked.length,
-      completedAt: new Date().toISOString(),
-    });
-  } catch (error) {
-    updateScan(scan.id, {
-      status: "failed",
-      completedAt: new Date().toISOString(),
-    });
-    console.error("Scan failed:", error instanceof Error ? error.message : error);
-  }
+  scan.status = "completed";
+  scan.averageRank = avgRank;
+  scan.pointsRanked = ranked.length;
+  scan.completedAt = new Date().toISOString();
 
-  return NextResponse.json(getScan(scan.id), { status: 201 });
+  // Return scan + results together in one response
+  return NextResponse.json({ scan, results }, { status: 201 });
 }

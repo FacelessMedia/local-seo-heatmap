@@ -60,34 +60,41 @@ export default function Home() {
     }
   };
 
+  const [scanError, setScanError] = useState<string | null>(null);
+
   const handleStartScan = async (data: ScanFormData) => {
     if (!activeProject) return;
 
     setIsScanning(true);
+    setScanError(null);
     try {
       const response = await fetch("/api/scans", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          projectId: activeProject.id,
           keyword: data.keyword,
           gridSize: data.gridSize,
           gridSpacing: data.gridSpacing,
+          businessName: activeProject.businessName,
+          placeId: activeProject.placeId || undefined,
+          latitude: activeProject.latitude,
+          longitude: activeProject.longitude,
         }),
       });
 
       if (response.ok) {
-        const scan = await response.json();
+        const { scan, results } = await response.json();
         setScans((prev) => [...prev, scan]);
         setActiveScan(scan);
-
-        // Fetch results
-        const resultsResponse = await fetch(`/api/scans/${scan.id}`);
-        if (resultsResponse.ok) {
-          const { results } = await resultsResponse.json();
-          setScanResults(results);
-        }
+        setScanResults(results);
+      } else {
+        const err = await response.json().catch(() => ({ error: "Unknown error" }));
+        setScanError(err.error || `Scan failed (${response.status})`);
+        console.error("Scan error:", err);
       }
+    } catch (err) {
+      setScanError(err instanceof Error ? err.message : "Network error — check your connection");
+      console.error("Scan network error:", err);
     } finally {
       setIsScanning(false);
     }
@@ -249,6 +256,7 @@ export default function Home() {
               onStartScan={handleStartScan}
               isScanning={isScanning}
               projectName={activeProject.businessName}
+              error={scanError}
             />
           </div>
 

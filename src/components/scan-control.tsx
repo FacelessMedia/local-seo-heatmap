@@ -12,19 +12,32 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Loader2, Search, Crosshair } from "lucide-react";
+import { Loader2, Search, Crosshair, Info, AlertCircle } from "lucide-react";
 import { GRID_SIZES, GRID_SPACINGS, ScanFormData } from "@/lib/types";
 
 interface ScanControlProps {
   onStartScan: (data: ScanFormData) => Promise<void>;
   isScanning: boolean;
   projectName?: string;
+  error?: string | null;
+}
+
+function Tooltip({ text }: { text: string }) {
+  return (
+    <span className="group relative inline-flex ml-1 cursor-help">
+      <Info className="h-3.5 w-3.5 text-muted-foreground" />
+      <span className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 w-52 rounded-md bg-foreground px-2.5 py-1.5 text-[11px] leading-snug text-background opacity-0 transition-opacity group-hover:opacity-100 z-50 shadow-lg">
+        {text}
+      </span>
+    </span>
+  );
 }
 
 export default function ScanControl({
   onStartScan,
   isScanning,
   projectName,
+  error,
 }: ScanControlProps) {
   const [keyword, setKeyword] = useState("");
   const [gridSize, setGridSize] = useState<number>(7);
@@ -67,7 +80,10 @@ export default function ScanControl({
 
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-2">
-              <Label>Grid Size</Label>
+              <Label className="flex items-center">
+                Grid Size
+                <Tooltip text="How many check points on the map. More points = more detailed view but higher cost. 7×7 is the standard." />
+              </Label>
               <Select
                 value={gridSize.toString()}
                 onValueChange={(v) => setGridSize(parseInt(v))}
@@ -79,7 +95,7 @@ export default function ScanControl({
                 <SelectContent>
                   {GRID_SIZES.map((g) => (
                     <SelectItem key={g.value} value={g.value.toString()}>
-                      {g.label} ({g.points} points)
+                      {g.label} ({g.points} pts)
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -87,7 +103,10 @@ export default function ScanControl({
             </div>
 
             <div className="space-y-2">
-              <Label>Spacing</Label>
+              <Label className="flex items-center">
+                Spacing
+                <Tooltip text="Distance between each check point. Smaller = zoomed-in view of a neighborhood. Larger = covers a wider metro area." />
+              </Label>
               <Select
                 value={gridSpacing.toString()}
                 onValueChange={(v) => setGridSpacing(parseInt(v))}
@@ -124,6 +143,13 @@ export default function ScanControl({
               </span>
             </div>
           </div>
+
+          {error && (
+            <div className="flex items-start gap-2 rounded-md border border-red-200 bg-red-50 dark:border-red-900 dark:bg-red-950 px-3 py-2 text-xs text-red-700 dark:text-red-300">
+              <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+              <span>{error}</span>
+            </div>
+          )}
 
           <Button
             type="submit"
