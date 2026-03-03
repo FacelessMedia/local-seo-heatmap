@@ -9,6 +9,7 @@ import HeatmapGrid from "@/components/heatmap-grid";
 import PointDetail from "@/components/point-detail";
 import DashboardStats from "@/components/dashboard-stats";
 import ExportButton from "@/components/export-button";
+import DebugLog, { LogEntry } from "@/components/debug-log";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -31,6 +32,8 @@ export default function Home() {
   const [selectedPoint, setSelectedPoint] = useState<ScanResult | null>(null);
   const [showSetup, setShowSetup] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [debugLogs, setDebugLogs] = useState<LogEntry[]>([]);
+  const [scanProgress, setScanProgress] = useState<{ completed: number; total: number; found: number; errors: number } | null>(null);
 
   const heatmapRef = useRef<HTMLDivElement>(null);
 
@@ -62,11 +65,23 @@ export default function Home() {
 
   const [scanError, setScanError] = useState<string | null>(null);
 
+  const addLog = useCallback((message: string, type: LogEntry["type"] = "info") => {
+    const time = new Date().toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    setDebugLogs((prev) => [...prev, { time, message, type }]);
+  }, []);
+
   const handleStartScan = async (data: ScanFormData) => {
     if (!activeProject) return;
 
     setIsScanning(true);
     setScanError(null);
+    setScanResults([]);
+    setActiveScan(null);
+    setDebugLogs([]);
+    setScanProgress(null);
+
+    addLog(`Sending scan request: "${data.keyword}" (${data.gridSize}×${data.gridSize}, ${(data.gridSpacing / 1609).toFixed(1)} mi spacing)`);
+
     try {
       const response = await fetch("/api/scans", {
         method: "POST",
@@ -82,19 +97,73 @@ export default function Home() {
         }),
       });
 
-      if (response.ok) {
-        const { scan, results } = await response.json();
-        setScans((prev) => [...prev, scan]);
-        setActiveScan(scan);
-        setScanResults(results);
-      } else {
-        const err = await response.json().catch(() => ({ error: "Unknown error" }));
-        setScanError(err.error || `Scan failed (${response.status})`);
-        console.error("Scan error:", err);
+      if (!response.ok) {
+        const text = await response.text();
+        addLog(`Server error ${response.status}: ${text}`, "error");
+        setScanError(`Server error ${response.status}`);
+        setIsScanning(false);
+        return;
+      }
+
+      addLog("Connected to scan stream ✓", "success");
+
+      const reader = response.body?.getReader();
+      if (!reader) {
+        addLog("No response body — cannot read stream", "error");
+        setScanError("No response stream");
+        setIsScanning(false);
+        return;
+      }
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+
+        // Parse SSE events from buffer
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || ""; // Keep incomplete line in buffer
+
+        let eventType = "";
+        for (const line of lines) {
+          if (line.startsWith("event: ")) {
+            eventType = line.slice(7).trim();
+          } else if (line.startsWith("data: ")) {
+            const jsonStr = line.slice(6);
+            try {
+              const eventData = JSON.parse(jsonStr);
+
+              if (eventType === "log") {
+                const isError = eventData.message?.includes("❌") || eventData.message?.includes("error");
+                const isSuccess = eventData.message?.includes("✅") || eventData.message?.includes("✓");
+                addLog(eventData.message, isError ? "error" : isSuccess ? "success" : "info");
+              } else if (eventType === "progress") {
+                setScanProgress(eventData);
+                addLog(`Progress: ${eventData.completed}/${eventData.total}`, "progress");
+              } else if (eventType === "complete") {
+                const { scan, results } = eventData;
+                setScans((prev) => [...prev, scan]);
+                setActiveScan(scan);
+                setScanResults(results);
+                addLog(`Scan complete! Average rank: ${scan.averageRank ?? "N/A"}`, "success");
+              } else if (eventType === "error") {
+                addLog(`Error: ${eventData.message}`, "error");
+                setScanError(eventData.message);
+              }
+            } catch {
+              // Ignore JSON parse errors for incomplete chunks
+            }
+          }
+        }
       }
     } catch (err) {
-      setScanError(err instanceof Error ? err.message : "Network error — check your connection");
-      console.error("Scan network error:", err);
+      const msg = err instanceof Error ? err.message : "Network error";
+      addLog(`Fatal: ${msg}`, "error");
+      setScanError(msg);
     } finally {
       setIsScanning(false);
     }
@@ -316,7 +385,16 @@ export default function Home() {
         )}
 
         {/* Heatmap Area */}
-        <div className="flex-1 p-4 overflow-auto">
+        <div className="flex-1 p-4 overflow-auto space-y-4">
+          {/* Debug Log — always visible when there are logs */}
+          {debugLogs.length > 0 && (
+            <DebugLog
+              logs={debugLogs}
+              progress={scanProgress}
+              onClear={() => { setDebugLogs([]); setScanProgress(null); }}
+            />
+          )}
+
           {scanResults.length > 0 ? (
             <div ref={heatmapRef}>
               <HeatmapGrid
@@ -330,7 +408,7 @@ export default function Home() {
                 onPointClick={setSelectedPoint}
               />
             </div>
-          ) : (
+          ) : !isScanning ? (
             <div className="h-full flex items-center justify-center">
               <div className="text-center">
                 <Grid3X3 className="h-16 w-16 mx-auto text-muted-foreground/30 mb-4" />
@@ -353,7 +431,7 @@ export default function Home() {
                 )}
               </div>
             </div>
-          )}
+          ) : null}
         </div>
       </main>
 
