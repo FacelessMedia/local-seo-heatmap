@@ -81,10 +81,11 @@ export const GRID_SIZES: { value: GridSize; label: string; points: number }[] = 
 ];
 
 export const GRID_SPACINGS: { value: number; label: string }[] = [
-  { value: 500, label: "500m" },
-  { value: 1000, label: "1km" },
-  { value: 1500, label: "1.5km" },
-  { value: 2000, label: "2km" },
-  { value: 3000, label: "3km" },
-  { value: 5000, label: "5km" },
+  { value: 402, label: "0.25 mi" },
+  { value: 805, label: "0.5 mi" },
+  { value: 1609, label: "1 mi" },
+  { value: 2414, label: "1.5 mi" },
+  { value: 3219, label: "2 mi" },
+  { value: 4828, label: "3 mi" },
+  { value: 8047, label: "5 mi" },
 ];

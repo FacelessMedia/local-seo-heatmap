@@ -28,7 +28,7 @@ export default function ScanControl({
 }: ScanControlProps) {
   const [keyword, setKeyword] = useState("");
   const [gridSize, setGridSize] = useState<number>(7);
-  const [gridSpacing, setGridSpacing] = useState<number>(1000);
+  const [gridSpacing, setGridSpacing] = useState<number>(1609);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -107,20 +107,20 @@ export default function ScanControl({
             </div>
           </div>
 
-          <div className="rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">
+          <div className="rounded-md bg-muted px-3 py-2.5 text-xs text-muted-foreground space-y-1">
             <div className="flex justify-between">
               <span>Grid points:</span>
-              <span className="font-medium">{selectedGridInfo?.points || 0}</span>
+              <span className="font-medium text-foreground">{selectedGridInfo?.points || 0}</span>
             </div>
-            <div className="flex justify-between mt-0.5">
+            <div className="flex justify-between">
               <span>Est. API cost:</span>
-              <span className="font-medium">${estimatedCost}</span>
+              <span className="font-medium text-foreground">${estimatedCost}</span>
             </div>
-            <div className="flex justify-between mt-0.5">
+            <div className="flex justify-between">
               <span>Coverage area:</span>
-              <span className="font-medium">
-                {((gridSize - 1) * gridSpacing / 1000).toFixed(1)}km ×{" "}
-                {((gridSize - 1) * gridSpacing / 1000).toFixed(1)}km
+              <span className="font-medium text-foreground">
+                {((gridSize - 1) * gridSpacing / 1609).toFixed(1)} mi ×{" "}
+                {((gridSize - 1) * gridSpacing / 1609).toFixed(1)} mi
               </span>
             </div>
           </div>

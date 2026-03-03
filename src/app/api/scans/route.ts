@@ -36,9 +36,9 @@ export async function POST(request: NextRequest) {
 
   addScan(scan);
 
-  // Check if DataForSEO credentials are configured
-  const login = process.env.DATAFORSEO_LOGIN;
-  const password = process.env.DATAFORSEO_PASSWORD;
+  // Check if DataForSEO credentials are configured (trim to remove any trailing whitespace/newlines)
+  const login = process.env.DATAFORSEO_LOGIN?.trim();
+  const password = process.env.DATAFORSEO_PASSWORD?.trim();
 
   if (!login || !password) {
     // Demo mode: generate mock results
@@ -104,13 +104,23 @@ export async function POST(request: NextRequest) {
       spacingMeters: scan.gridSpacing,
     });
 
+    console.log(`[Scan] Starting real scan: keyword="${keyword}", business="${project.businessName}", placeId="${project.placeId}", grid=${scan.gridSize}x${scan.gridSize}, points=${gridPoints.length}`);
+
     const gridResults = await runFullGridScan(
-      { login, password },
+      { login: login!, password: password! },
       keyword,
       gridPoints,
       project.placeId,
       project.businessName
     );
+
+    const errorCount = gridResults.filter(r => r.error).length;
+    const foundCount = gridResults.filter(r => r.rank !== null).length;
+    console.log(`[Scan] Results: ${foundCount} found, ${errorCount} errors, ${gridResults.length - foundCount - errorCount} not ranked`);
+    if (errorCount > 0) {
+      const sampleError = gridResults.find(r => r.error);
+      console.error(`[Scan] Sample error:`, sampleError?.error);
+    }
 
     const results: ScanResult[] = gridResults.map((gr) => ({
       id: crypto.randomUUID(),
@@ -149,7 +159,7 @@ export async function POST(request: NextRequest) {
       status: "failed",
       completedAt: new Date().toISOString(),
     });
-    console.error("Scan failed:", error);
+    console.error("Scan failed:", error instanceof Error ? error.message : error);
   }
 
   return NextResponse.json(getScan(scan.id), { status: 201 });
